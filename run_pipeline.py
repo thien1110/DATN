@@ -337,6 +337,45 @@ plt.tight_layout()
 plt.savefig('figures/Hinh_4_XGBoost_Fidelity_Scatter.png', dpi=300)
 plt.close()
 
+from scipy.stats import spearmanr
+
+# --- Kiểm chứng độc lập trực tiếp trên mạng LSTM (Permutation Importance & IG) ---
+rng = np.random.RandomState(SEED)
+Y_test_pseudo_scaled = model.predict(X_test_lstm, verbose=0).ravel()
+
+lstm_perm_imp = {}
+for j, col in enumerate(X_columns):
+    diffs = []
+    for _ in range(20):
+        perm_idx = rng.permutation(len(X_test_lstm))
+        X_perm = X_test_lstm.copy()
+        X_perm[:, -1, j] = X_perm[perm_idx, -1, j]
+        pred_perm = model.predict(X_perm, verbose=0).ravel()
+        diffs.append(mean_absolute_error(Y_test_pseudo_scaled, pred_perm))
+    lstm_perm_imp[col] = np.mean(diffs)
+lstm_perm_series = pd.Series(lstm_perm_imp)
+
+def compute_lstm_ig(lstm_model, X_input, baseline, steps=50):
+    X_tf = tf.cast(X_input, tf.float32)
+    base_tf = tf.cast(baseline, tf.float32)
+    alphas = tf.linspace(0.0, 1.0, steps + 1)
+    grads = []
+    for alpha in alphas:
+        interp = base_tf + alpha * (X_tf - base_tf)
+        with tf.GradientTape() as tape:
+            tape.watch(interp)
+            out = lstm_model(interp, training=False)
+        grads.append(tape.gradient(out, interp).numpy())
+    avg_grads = np.mean(grads[:-1] + grads[1:], axis=0) / 2.0
+    return (X_input - baseline) * avg_grads
+
+baseline_lstm = np.mean(X_train_lstm, axis=0, keepdims=True)
+ig_values = compute_lstm_ig(model, X_test_lstm, baseline=baseline_lstm, steps=50)
+lstm_ig_series = pd.Series(np.mean(np.abs(ig_values[:, -1, :]), axis=0), index=X_columns)
+
+rho_ig_perm, p_ig_perm = spearmanr(lstm_ig_series, lstm_perm_series)
+print(f"--> Tương quan hạng Spearman (LSTM IG vs LSTM Permutation): rho = {rho_ig_perm:.4f} (p = {p_ig_perm:.2e})")
+
 # =====================================================================
 # BƯỚC 6: TREESHAP THEO ĐƠN VỊ GIƯỜNG BỆNH & ĐẶC TRƯNG GỐC (HÌNH 5 -> 9)
 # =====================================================================
