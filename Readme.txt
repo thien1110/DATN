@@ -17,8 +17,8 @@ DATN/
 ├── features.csv                # Bảng chuỗi thời gian theo ngày (tự động sinh từ pipeline)
 ├── removed_cases_log.csv       # Nhật ký các hồ sơ ảo (< 15 phút) bị loại bỏ
 ├── run_pipeline.py             # Kịch bản Python thực thi toàn bộ quy trình từ đầu đến cuối
-├── requirements.txt            # Danh sách cố định phiên bản các thư viện phụ thuộc
-└── README.TXT                   # Hướng dẫn cài đặt và chạy thực nghiệm
+├── Requirements.txt            # Danh sách cố định phiên bản các thư viện phụ thuộc
+└── Readme.TXT                   # Hướng dẫn cài đặt và chạy thực nghiệm
 
 ⚙️ Hướng dẫn cài đặt và tái lập kết quả
 Để đảm bảo tính tái lập (Reproducibility) với hạt giống ngẫu nhiên cố định (seed = 42), hãy thực hiện theo các bước sau trên giao diện dòng lệnh (Terminal / Command Prompt):
@@ -26,7 +26,7 @@ DATN/
 Bước 1: Cài đặt môi trường Python và các thư viện phụ thuộc
 Khuyến nghị sử dụng Python 3.10.x. Chạy lệnh sau để cài đặt các gói phần mềm có phiên bản cố định:
 
-	pip install -r requirements.txt
+	pip install -r Requirements.txt
 
 Bước 2: Thực thi kịch bản Pipeline khép kín
 Chạy tệp điều phối chính để hệ thống tự động làm sạch dữ liệu, trích xuất đặc trưng, huấn luyện LSTM, ARIMA, XGBoost Surrogate, chạy TreeSHAP và xuất trọn bộ Hình 1 đến Hình 9 vào thư mục figures/:
@@ -45,6 +45,6 @@ Hiệu năng dự báo LSTM (Tập kiểm thử độc lập 200 ngày / 193 m�
 Các yếu tố chi phối mạnh nhất theo TreeSHAP (tính theo đơn vị giường bệnh):
 	Quán tính công suất lưu trú (Lag_1: 40.58 giường, Rolling_Mean_7: 18.03 giường).   
 	Áp lực bệnh nhân cấp cứu (Emergency_Count: 17.71 giường).   
-	Lưu lượng xuất viện (Discharges: 8.08 giường)[cite: 1].
-	Số bệnh nhân cao tuổi nhập viện (Total_Elderly_Admitted: 7.43 giường)[cite: 1].
-	Chu kỳ hành chính tuần (DayOfWeek: 6.91 giường)[cite: 1].
+	Lưu lượng xuất viện (Discharges: 8.08 giường).
+	Số bệnh nhân cao tuổi nhập viện (Total_Elderly_Admitted: 7.43 giường).
+	Chu kỳ hành chính tuần (DayOfWeek: 6.91 giường).
