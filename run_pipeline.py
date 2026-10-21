@@ -59,6 +59,10 @@ raw_df['Is_Respiratory'] = (raw_df['ICD_Main_Letter'] == 'J').astype(int)
 raw_df['Is_Cardiovascular'] = (raw_df['ICD_Main_Letter'] == 'I').astype(int)
 raw_df['Is_Infectious'] = (raw_df['ICD_Main_Letter'].isin(['A', 'B'])).astype(int)
 
+# 1.2. Lọc hồ sơ ảo (< 15 phút) và tổng hợp chuỗi thời gian công suất giường (Census)
+raw_df['Duration_Hours'] = (raw_df['Discharge_Time'] - raw_df['Admission_Time']).dt.total_seconds() / 3600.0
+df_clean = raw_df[(raw_df['Duration_Hours'] >= 0.25) & (raw_df['Discharge_Time'] <= '2026-08-28 23:59:59')].copy()
+
 daily_clinical_features = raw_df.groupby('Date').agg(
     Avg_ICD_Sub_Count=('ICD_Sub_Count', 'mean'),
     Total_Elderly_Admitted=('Is_Elderly', 'sum'),
@@ -67,15 +71,13 @@ daily_clinical_features = raw_df.groupby('Date').agg(
     Total_Infectious=('Is_Infectious', 'sum')
 ).reset_index()
 
-# 1.2. Lọc hồ sơ ảo (< 15 phút) và tổng hợp chuỗi thời gian công suất giường (Census)
-raw_df['Duration_Hours'] = (raw_df['Discharge_Time'] - raw_df['Admission_Time']).dt.total_seconds() / 3600.0
+
 
 # Lưu nhật ký hồ sơ ảo (< 15 phút) để đối chiếu vận hành
 df_removed = raw_df[raw_df['Duration_Hours'] < 0.25].copy()
 df_removed.to_csv('removed_cases_log.csv', index=False, encoding='utf-8-sig')
 
 # Giữ lại các ca hợp lệ (>= 15 phút, chốt sổ xuất viện tại thời điểm trích xuất 28/08/2026)
-df_clean = raw_df[(raw_df['Duration_Hours'] >= 0.25) & (raw_df['Discharge_Time'] <= '2026-08-28 23:59:59')].copy()
 
 min_date = df_clean['Admission_Time'].min().normalize()
 max_date = pd.to_datetime('2026-08-27')
@@ -212,7 +214,7 @@ print(f"--> KẾT QUẢ LSTM TRÊN TẬP TEST: MAE = {mae:.2f} giường | RMSE 
 plt.figure(figsize=(8, 6))
 plt.plot(history.history['loss'], label='Sai số tập Train')
 plt.plot(history.history['val_loss'], label='Sai số tập Validation')
-plt.title('Quá trình huấn luyện LSTM')
+plt.title('Quá trình huấn luyện LSTM', pad=25)
 plt.xlabel('Vòng lặp (Epochs)')
 plt.ylabel('Sai số (MSE Scale)')
 plt.legend()
@@ -224,7 +226,7 @@ plt.close()
 plt.figure(figsize=(8, 6))
 plt.plot(dates_test[-90:], Y_test_real[-90:], label='Thực tế', marker='o', linestyle='dashed')
 plt.plot(dates_test[-90:], predictions_real[-90:], label='Dự báo (LSTM)', marker='x', alpha=0.8)
-plt.title('Dự báo vs Thực tế')
+plt.title('Dự báo so với Thực tế (90 ngày cuối tập Kiểm thử: 03/05/2026 - 31/07/2026)', pad=25)
 plt.xlabel('Thời gian')
 plt.ylabel('Số lượng giường bệnh')
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%d/%m/%Y'))
@@ -274,21 +276,24 @@ plt.savefig('figures/Hinh_3_Compare_ARIMA_LSTM.png', dpi=300)
 plt.close()
 
 # =====================================================================
-# BƯỚC 5: MÔ HÌNH ĐẠI DIỆN XGBOOST (SURROGATE MODEL) & XUẤT HÌNH 4
+# BƯỚC 5: MÔ HÌNH ĐẠI DIỆN XGBOOST TRÊN ĐƠN VỊ GIƯỜNG THỰC TẾ (A2, A3, A4, A5)
 # =====================================================================
-print("\nBƯỚC 5: Huấn luyện mô hình đại diện toàn cục XGBoost (Chống rò rỉ dữ liệu)...")
+print("\nBƯỚC 5: Huấn luyện Surrogate XGBoost trên nhãn giả đơn vị GIƯỜNG và đặc trưng GỐC...")
 
-# 1. Sinh nhãn giả (Pseudo-labels) từ mạng LSTM cho cả 3 tập Train, Validation và Test
-Y_train_pseudo = model.predict(X_train_lstm, verbose=0).ravel()
-Y_val_pseudo   = model.predict(X_val_lstm,   verbose=0).ravel()
-Y_test_pseudo  = model.predict(X_test_lstm,  verbose=0).ravel()
+# 1. Sinh nhãn giả từ LSTM và đảo chuẩn hóa (inverse_transform) về đơn vị GIƯỜNG BỆNH
+Y_train_pseudo_beds = scaler_Y.inverse_transform(model.predict(X_train_lstm, verbose=0)).ravel()
+Y_val_pseudo_beds   = scaler_Y.inverse_transform(model.predict(X_val_lstm,   verbose=0)).ravel()
+Y_test_pseudo_beds  = scaler_Y.inverse_transform(model.predict(X_test_lstm,  verbose=0)).ravel()
 
-# 2. Cắt bỏ 7 ngày đầu (window = 7) của dữ liệu 2D để đồng bộ kích thước với chuỗi LSTM
-X_train_xgb = X_train_scaled[window:]
-X_val_xgb   = X_val_scaled[window:]
-X_test_xgb  = X_test_scaled[window:]
+# 2. Lấy đặc trưng ở ĐƠN VỊ GỐC (số ca, tuổi, thứ...) tại bước cuối cửa sổ trượt (t-1)
+X_train_xgb_raw = train_df[X_columns].iloc[window - 1 : -1].reset_index(drop=True).round(2)
+X_val_xgb_raw   = val_df[X_columns].iloc[window - 1 : -1].reset_index(drop=True).round(2)
+X_test_xgb_raw  = test_df[X_columns].iloc[window - 1 : -1].reset_index(drop=True).round(2)
 
-# 3. Khởi tạo XGBRegressor (Chuẩn XGBoost >= 2.0: đặt early_stopping_rounds trong constructor)
+assert len(X_train_xgb_raw) == len(Y_train_pseudo_beds), "Lỗi lệch dòng tập Train!"
+assert len(X_val_xgb_raw)   == len(Y_val_pseudo_beds),   "Lỗi lệch dòng tập Validation!"
+assert len(X_test_xgb_raw)  == len(Y_test_pseudo_beds) == len(dates_test), "Lỗi lệch dòng tập Test!"
+
 xgb_model = xgb.XGBRegressor(
     n_estimators=300,
     learning_rate=0.05,
@@ -300,37 +305,32 @@ xgb_model = xgb.XGBRegressor(
     random_state=SEED
 )
 
-# 4. Huấn luyện và giám sát Dừng sớm độc lập trên tập Validation (X_val_xgb, Y_val_pseudo)
+# Huấn luyện trên đơn vị giường và dừng sớm độc lập trên tập Validation
 xgb_model.fit(
-    X_train_xgb, Y_train_pseudo,
-    eval_set=[(X_train_xgb, Y_train_pseudo), (X_val_xgb, Y_val_pseudo)],
+    X_train_xgb_raw, Y_train_pseudo_beds,
+    eval_set=[(X_train_xgb_raw, Y_train_pseudo_beds), (X_val_xgb_raw, Y_val_pseudo_beds)],
     verbose=False
 )
 
-# 5. Đánh giá Độ trung thành (Fidelity R2) trên cả 3 tập Train, Validation, Test
-xgb_pred_train = xgb_model.predict(X_train_xgb)
-xgb_pred_val   = xgb_model.predict(X_val_xgb)
-xgb_pred_test  = xgb_model.predict(X_test_xgb)
+xgb_pred_train = xgb_model.predict(X_train_xgb_raw)
+xgb_pred_val   = xgb_model.predict(X_val_xgb_raw)
+xgb_pred_test  = xgb_model.predict(X_test_xgb_raw)
 
-fidelity_train = r2_score(Y_train_pseudo, xgb_pred_train)
-fidelity_val   = r2_score(Y_val_pseudo,   xgb_pred_val)
-fidelity_test  = r2_score(Y_test_pseudo,  xgb_pred_test)
+fidelity_train = r2_score(Y_train_pseudo_beds, xgb_pred_train)
+fidelity_val   = r2_score(Y_val_pseudo_beds,   xgb_pred_val)
+fidelity_test  = r2_score(Y_test_pseudo_beds,  xgb_pred_test)
 
-print("--- ĐÁNH GIÁ ĐỘ TRUNG THÀNH (FIDELITY R2) CỦA MÔ HÌNH ĐẠI DIỆN XGBOOST ---")
-print(f"Số cây tối ưu (best_iteration): {xgb_model.best_iteration}")
-print(f"1. Tập Huấn luyện (Train set)      : R2 = {fidelity_train:.4f}")
-print(f"2. Tập Kiểm định (Validation set)  : R2 = {fidelity_val:.4f}")
-print(f"3. Tập Kiểm thử (Test set - Độc lập): R2 = {fidelity_test:.4f}")
+print(f"--> Fidelity R2 | Train: {fidelity_train:.4f} | Val: {fidelity_val:.4f} | Test: {fidelity_test:.4f}")
 
-# --- Xuất Hình 4: Biểu đồ phân tán (Scatter Plot) đánh giá độ trung thành ---
+# --- Xuất Hình 4: Biểu đồ phân tán (Scatter Plot) theo đơn vị giường bệnh ---
 plt.figure(figsize=(6.5, 6.5))
-plt.scatter(Y_test_pseudo, xgb_predictions, color='#9B59B6', edgecolor='white', s=45, alpha=0.85)
-min_val = min(Y_test_pseudo.min(), xgb_predictions.min())
-max_val = max(Y_test_pseudo.max(), xgb_predictions.max())
+plt.scatter(Y_test_pseudo_beds, xgb_pred_test, color='#9B59B6', edgecolor='white', s=45, alpha=0.85)
+min_val = min(Y_test_pseudo_beds.min(), xgb_pred_test.min())
+max_val = max(Y_test_pseudo_beds.max(), xgb_pred_test.max())
 plt.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Đường chuẩn y=x')
-plt.title(f'Độ trung thành của XGBoost so với LSTM ($R^2 = {fidelity_score:.4f}$)')
-plt.xlabel('Dự báo của mạng học sâu LSTM (Pseudo-labels)')
-plt.ylabel('Dự báo của XGBoost (Surrogate Model)')
+plt.title(f'Độ trung thành của XGBoost so với LSTM ($R^2 = {fidelity_test:.4f}$)',pad=25)
+plt.xlabel('Dự báo của mạng học sâu LSTM (Số giường bệnh)')
+plt.ylabel('Dự báo của XGBoost Surrogate (Số giường bệnh)')
 plt.grid(True, linestyle='--', alpha=0.5)
 plt.legend()
 plt.tight_layout()
@@ -338,40 +338,39 @@ plt.savefig('figures/Hinh_4_XGBoost_Fidelity_Scatter.png', dpi=300)
 plt.close()
 
 # =====================================================================
-# BƯỚC 6: GIẢI THÍCH MÔ HÌNH VỚI TREESHAP & XUẤT HÌNH 5, 6, 7, 8, 9
+# BƯỚC 6: TREESHAP THEO ĐƠN VỊ GIƯỜNG BỆNH & ĐẶC TRƯNG GỐC (HÌNH 5 -> 9)
 # =====================================================================
-print("\nBƯỚC 6: Trích xuất giá trị SHAP và vẽ biểu đồ giải thích (Hình 5 -> Hình 9)...")
-feature_names = X_columns
-X_test_df = pd.DataFrame(X_test_xgb, columns=feature_names)
-
+print("\nBƯỚC 6: Xuất Hình 5 -> Hình 9 theo đơn vị GIƯỜNG BỆNH và giá trị đặc trưng GỐC...")
 explainer = shap.TreeExplainer(xgb_model)
-shap_values = explainer.shap_values(X_test_df)
+shap_values_beds = explainer.shap_values(X_test_xgb_raw)
 
-# --- Xuất Hình 5: SHAP Feature Importance (Bar Plot) ---
+# --- Xuất Hình 5: SHAP Feature Importance (Đơn vị: Giường bệnh) ---
 plt.figure(figsize=(10, 8))
-shap.summary_plot(shap_values, X_test_df, plot_type="bar", show=False)
+shap.summary_plot(shap_values_beds, X_test_xgb_raw, plot_type="bar", show=False)
+plt.xlabel("mean(|SHAP value|) - Mức tác động trung bình (Số lượng giường bệnh)", fontsize=11)
 ax = plt.gca()
 for patch in ax.patches:
     w = patch.get_width()
     if w > 0:
-        ax.text(w + 0.001, patch.get_y() + patch.get_height() / 2, f'{w:.4f}',
-                ha='left', va='center', fontsize=10, color='black')
+        ax.text(w + 0.3, patch.get_y() + patch.get_height() / 2, f'{w:.2f} giường',
+                ha='left', va='center', fontsize=9.5, color='black')
 plt.title("Tầm quan trọng của các yếu tố ảnh hưởng đến nhu cầu giường bệnh", pad=20)
 plt.margins(y=0.02)
-plt.xlim(right=ax.get_xlim()[1] * 1.12)
+plt.xlim(right=ax.get_xlim()[1] * 1.18)
 plt.tight_layout()
 plt.savefig('figures/Hinh_5_SHAP_Feature_Importance.png', dpi=300)
 plt.close()
 
-# --- Xuất Hình 6: SHAP Beeswarm Plot ---
+# --- Xuất Hình 6: SHAP Beeswarm Plot (Đơn vị: Giường bệnh) ---
 plt.figure(figsize=(12, 8))
-shap.summary_plot(shap_values, X_test_df, show=False)
-plt.title("Biểu đồ bầy đàn SHAP: Phân tích chiều tác động (Tăng/Giảm)")
+shap.summary_plot(shap_values_beds, X_test_xgb_raw, show=False)
+plt.xlabel("Giá trị SHAP (Mức độ làm Tăng/Giảm số lượng giường bệnh)")
+plt.title("Biểu đồ bầy đàn SHAP: Phân tích chiều tác động (Đơn vị: Giường bệnh)")
 plt.tight_layout()
 plt.savefig('figures/Hinh_6_SHAP_Beeswarm.png', dpi=300)
 plt.close()
 
-# --- Xuất Hình 7, 8, 9: SHAP Waterfall cho 3 ngày điển hình trong tuần ---
+# --- Xuất Hình 7, 8, 9: SHAP Waterfall hiển thị ĐƠN VỊ GIƯỜNG và ĐẶC TRƯNG GỐC ---
 dates_test_dt = pd.to_datetime(dates_test)
 waterfall_configs = [
     ('2026-07-12', 'Chủ nhật', 'Hinh_7_SHAP_Waterfall_2026_07_12.png'),
@@ -379,26 +378,50 @@ waterfall_configs = [
     ('2026-07-17', 'Thứ Sáu',  'Hinh_9_SHAP_Waterfall_2026_07_17.png')
 ]
 
-base_val = explainer.expected_value
-if isinstance(base_val, (list, np.ndarray)):
-    base_val = float(np.squeeze(base_val))
+base_val_beds = float(np.squeeze(explainer.expected_value))
 
 for date_str, day_name, fig_name in waterfall_configs:
     target_dt = pd.to_datetime(date_str)
     idx_array = np.where(dates_test_dt == target_dt)[0]
     if len(idx_array) > 0:
-        idx = idx_array[0]
+        idx = int(idx_array[0])
         plt.figure(figsize=(10, 6))
         explanation = shap.Explanation(
-            values=shap_values[idx],
-            base_values=base_val,
-            data=X_test_df.iloc[idx],
-            feature_names=feature_names
+            values=shap_values_beds[idx],
+            base_values=base_val_beds,
+            data=X_test_xgb_raw.iloc[idx],
+            feature_names=X_columns
         )
         shap.waterfall_plot(explanation, show=False)
-        plt.title(f"Giải thích cục bộ: {day_name} - Ngày {target_dt.strftime('%d/%m/%Y')}")
+        plt.title(f"Giải thích cục bộ (Đơn vị: Giường): {day_name} - Ngày {target_dt.strftime('%d/%m/%Y')}", pad=25)
         plt.tight_layout()
         plt.savefig(f'figures/{fig_name}', dpi=300)
         plt.close()
+
+
+# --- Xuất Bảng 4.1: Thống kê giá trị gốc và SHAP trung bình theo Thứ trong tuần (Yêu cầu A7) ---
+dow_names = {0: 'Thứ Hai', 1: 'Thứ Ba', 2: 'Thứ Tư', 3: 'Thứ Năm', 4: 'Thứ Sáu', 5: 'Thứ Bảy', 6: 'Chủ nhật'}
+df_dow_analysis = test_df.iloc[window:].reset_index(drop=True)[
+    ['DayOfWeek', 'Census', 'Admissions', 'Discharges', 'Emergency_Count', 'Total_Elderly_Admitted']
+].copy()
+
+shap_df_beds = pd.DataFrame(shap_values_beds, columns=[f'SHAP_{c}' for c in X_columns])
+df_dow_full = pd.concat([df_dow_analysis, shap_df_beds], axis=1)
+
+dow_report = df_dow_full.groupby('DayOfWeek').agg(
+    N_Days=('Census', 'count'),
+    Census_Mean=('Census', 'mean'),
+    Admissions_Mean=('Admissions', 'mean'),
+    Discharges_Mean=('Discharges', 'mean'),
+    Emergency_Mean=('Emergency_Count', 'mean'),
+    SHAP_Lag1_Mean=('SHAP_Lag_1', 'mean'),
+    SHAP_DayOfWeek_Mean=('SHAP_DayOfWeek', 'mean'),
+    SHAP_Emergency_Mean=('SHAP_Emergency_Count', 'mean'),
+    SHAP_Discharges_Mean=('SHAP_Discharges', 'mean')
+).round(2)
+dow_report.index = [dow_names[i] for i in dow_report.index]
+dow_report.to_csv('figures/Bang_4_1_Thong_Ke_SHAP_Theo_Thu.csv', encoding='utf-8-sig')
+print("\nĐã xuất Bảng 4.1 (Thống kê SHAP theo Thứ trong tuần) trên toàn tập Kiểm thử (193 ngày):")
+print(dow_report.to_string())
 
 print("\nHOÀN TẤT TOÀN BỘ PIPELINE! Tất cả 9 hình ảnh đã được lưu trong thư mục 'figures/'.")

@@ -8,16 +8,13 @@ GO
 DECLARE @loaingay INT = 4;
 DECLARE @vTuNgay DATETIME = '2023-10-01 00:00:00';
 DECLARE @vDenNgay DATETIME = '2026-07-31 23:59:59';
-DECLARE @madoituong NVARCHAR(MAX) = N'';
-DECLARE @dangdieutri NVARCHAR(MAX) = N'';
-DECLARE @khoanoitru NVARCHAR(MAX) = N'';
 DECLARE @laycautruc BIT = 0;
 
 SET DATEFORMAT YMD;
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 SET NOCOUNT ON;
 
--- Khởi tạo bảng tạm (Temp Tables)
+-- 1. Dọn dẹp các bảng tạm (Temp Tables) nếu đã tồn tại trong phiên làm việc
 IF OBJECT_ID(N'tempdb..[#stay]', N'Table') IS NOT NULL DROP TABLE [#stay];
 IF OBJECT_ID(N'tempdb..[#ck]', N'Table') IS NOT NULL DROP TABLE [#ck];
 IF OBJECT_ID(N'tempdb..[#rv]', N'Table') IS NOT NULL DROP TABLE [#rv];
@@ -29,7 +26,7 @@ INTO [#stay]
 FROM tbl_A dt(NOLOCK)
 WHERE 1 = 0;
 
--- Logic trích xuất danh sách bệnh nhân nội trú
+-- 2. Logic trích xuất danh sách các đợt điều trị nội trú (#stay)
 IF @loaingay = 6
 BEGIN
     ;WITH cand AS (
@@ -39,7 +36,10 @@ BEGIN
         SELECT dt2.madieutri FROM tbl_C rv(NOLOCK)
         INNER JOIN tbl_A dt2(NOLOCK) ON dt2.makcb = rv.makcb AND dt2.malydo = 0
         WHERE rv.ngay BETWEEN @vTuNgay AND @vDenNgay
-          AND NOT EXISTS (SELECT 1 FROM tbl_B ck2(NOLOCK) WHERE ck2.madieutri = dt2.madieutri AND ck2.malydo = 0)
+          AND NOT EXISTS (
+              SELECT 1 FROM tbl_B ck2(NOLOCK)
+              WHERE ck2.madieutri = dt2.madieutri AND ck2.malydo = 0
+          )
     )
     INSERT INTO [#stay](madieutri, makcb, makk, ngayvaokhoa)
     SELECT dt.madieutri, dt.makcb, dt.makk, dt.ngay
@@ -58,9 +58,47 @@ BEGIN
       AND dt.ngay BETWEEN @vTuNgay AND @vDenNgay;
 END
 
-CREATE CLUSTERED INDEX ix_stay ON [#stay](madieutri);
+CREATE CLUSTERED INDEX ix_stay ON [#stay](madieutri, makcb);
 
--- Truy vấn và tổng hợp đầu ra
+-- 3. Khởi tạo các bảng tạm chuyển khoa (#ck), ra viện (#rv), bệnh chính (#cd) và bệnh kèm (#kem)
+-- 3.1. Bảng tạm thời gian chuyển khoa (#ck)
+SELECT ck.madieutri, MAX(ck.ngay) AS ngayck
+INTO [#ck]
+FROM tbl_B ck(NOLOCK)
+INNER JOIN [#stay] s ON s.madieutri = ck.madieutri
+WHERE ck.malydo = 0
+GROUP BY ck.madieutri;
+
+CREATE CLUSTERED INDEX ix_ck ON [#ck](madieutri);
+
+-- 3.2. Bảng tạm thời gian ra viện (#rv)
+SELECT rv.makcb, MAX(rv.ngay) AS ngayrv
+INTO [#rv]
+FROM tbl_C rv(NOLOCK)
+INNER JOIN (SELECT DISTINCT makcb FROM [#stay]) s ON s.makcb = rv.makcb
+GROUP BY rv.makcb;
+
+CREATE CLUSTERED INDEX ix_rv ON [#rv](makcb);
+
+-- 3.3. Bảng tạm chẩn đoán bệnh chính theo mã ICD-10 (#cd)
+SELECT cd.makcb, cd.ma, MAX(cd.mabenh_icd) AS mabenh_icd
+INTO [#cd]
+FROM tbl_E cd(NOLOCK)
+INNER JOIN [#stay] s ON s.makcb = cd.makcb AND s.madieutri = cd.ma
+GROUP BY cd.makcb, cd.ma;
+
+CREATE CLUSTERED INDEX ix_cd ON [#cd](makcb, ma);
+
+-- 3.4. Bảng tạm đếm số lượng bệnh kèm theo (#kem)
+SELECT km.makcb, km.ma, COUNT(km.mabenh_icd) AS sokem
+INTO [#kem]
+FROM tbl_F km(NOLOCK)
+INNER JOIN [#stay] s ON s.makcb = km.makcb AND s.madieutri = km.ma
+GROUP BY km.makcb, km.ma;
+
+CREATE CLUSTERED INDEX ix_kem ON [#kem](makcb, ma);
+
+-- 4. Truy vấn kết hợp và tổng hợp đầu ra ẩn danh (Băm SHA2_256)
 SELECT 
     CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST(s.makcb AS VARCHAR)), 2) AS Patient_ID_Hash,
     dk.maphai AS Gender,
