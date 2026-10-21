@@ -1,0 +1,82 @@
+USE [MyDataBase]
+GO
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+DECLARE @loaingay INT = 4;
+DECLARE @vTuNgay DATETIME = '2023-10-01 00:00:00';
+DECLARE @vDenNgay DATETIME = '2026-07-31 23:59:59';
+DECLARE @madoituong NVARCHAR(MAX) = N'';
+DECLARE @dangdieutri NVARCHAR(MAX) = N'';
+DECLARE @khoanoitru NVARCHAR(MAX) = N'';
+DECLARE @laycautruc BIT = 0;
+
+SET DATEFORMAT YMD;
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SET NOCOUNT ON;
+
+-- Khởi tạo bảng tạm (Temp Tables)
+IF OBJECT_ID(N'tempdb..[#stay]', N'Table') IS NOT NULL DROP TABLE [#stay];
+IF OBJECT_ID(N'tempdb..[#ck]', N'Table') IS NOT NULL DROP TABLE [#ck];
+IF OBJECT_ID(N'tempdb..[#rv]', N'Table') IS NOT NULL DROP TABLE [#rv];
+IF OBJECT_ID(N'tempdb..[#cd]', N'Table') IS NOT NULL DROP TABLE [#cd];
+IF OBJECT_ID(N'tempdb..[#kem]', N'Table') IS NOT NULL DROP TABLE [#kem];
+
+SELECT TOP 0 dt.madieutri, dt.makcb, dt.makk, dt.ngay AS ngayvaokhoa
+INTO [#stay]
+FROM tbl_A dt(NOLOCK)
+WHERE 1 = 0;
+
+-- Logic trích xuất danh sách bệnh nhân nội trú
+IF @loaingay = 6
+BEGIN
+    ;WITH cand AS (
+        SELECT ck.madieutri FROM tbl_B ck(NOLOCK)
+        WHERE ck.malydo = 0 AND ck.ngay BETWEEN @vTuNgay AND @vDenNgay
+        UNION
+        SELECT dt2.madieutri FROM tbl_C rv(NOLOCK)
+        INNER JOIN tbl_A dt2(NOLOCK) ON dt2.makcb = rv.makcb AND dt2.malydo = 0
+        WHERE rv.ngay BETWEEN @vTuNgay AND @vDenNgay
+          AND NOT EXISTS (SELECT 1 FROM tbl_B ck2(NOLOCK) WHERE ck2.madieutri = dt2.madieutri AND ck2.malydo = 0)
+    )
+    INSERT INTO [#stay](madieutri, makcb, makk, ngayvaokhoa)
+    SELECT dt.madieutri, dt.makcb, dt.makk, dt.ngay
+    FROM tbl_A dt(NOLOCK)
+    INNER JOIN cand c ON c.madieutri = dt.madieutri
+    INNER JOIN tbl_D dk(NOLOCK) ON dk.makcb = dt.makcb
+    WHERE dt.malydo = 0 AND @laycautruc = 0;
+END
+ELSE
+BEGIN
+    INSERT INTO [#stay](madieutri, makcb, makk, ngayvaokhoa)
+    SELECT dt.madieutri, dt.makcb, dt.makk, dt.ngay
+    FROM tbl_A dt(NOLOCK)
+    INNER JOIN tbl_D dk(NOLOCK) ON dk.makcb = dt.makcb
+    WHERE dt.malydo = 0 AND @laycautruc = 0
+      AND dt.ngay BETWEEN @vTuNgay AND @vDenNgay;
+END
+
+CREATE CLUSTERED INDEX ix_stay ON [#stay](madieutri);
+
+-- Truy vấn và tổng hợp đầu ra
+SELECT 
+    CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST(s.makcb AS VARCHAR)), 2) AS Patient_ID_Hash,
+    dk.maphai AS Gender,
+    YEAR(dk.ngaysinh) AS DoB_Year,
+    l1.tendoituong AS Patient_Type,
+    s.makk AS Department_ID,
+    s.ngayvaokhoa AS Admission_Time,
+    ISNULL(ck.ngayck, rv.ngayrv) AS Discharge_Time,
+    cd.mabenh_icd AS ICD_Code_Main,
+    ISNULL(km.sokem, 0) AS ICD_Sub_Count,
+    dk.capcuu AS Admission_Source
+FROM [#stay] s
+INNER JOIN tbl_D dk(NOLOCK) ON dk.makcb = s.makcb
+LEFT JOIN tbl_G l1(NOLOCK) ON l1.madoituong = dk.madoituong
+LEFT JOIN [#ck] ck ON ck.madieutri = s.madieutri
+LEFT JOIN [#rv] rv ON rv.makcb = s.makcb
+LEFT JOIN [#cd] cd ON cd.makcb = s.makcb AND cd.ma = s.madieutri
+LEFT JOIN [#kem] km ON km.makcb = s.makcb AND km.ma = s.madieutri
+WHERE (@loaingay <> 6 OR ISNULL(ck.ngayck, rv.ngayrv) BETWEEN @vTuNgay AND @vDenNgay);
